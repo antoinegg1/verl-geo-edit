@@ -1,0 +1,41 @@
+from google import genai
+from google.genai import types
+from PIL import Image
+import io
+from ..config import API_KEY
+
+system_prompt='''
+You are an image editing AI model. Your task is to edit images based on the user's instructions. You will receive an image along with specific editing instructions, and you need to apply those edits to the image accurately.
+'''
+
+def image_edition_function(image_list, image_index: int, prompt: str) -> str | Image.Image:
+
+    client = genai.Client(api_key=API_KEY)
+    image_to_edit = image_list[image_index]
+    
+    response = client.models.generate_content(
+        model="gemini-3-pro-image-preview",
+        contents=[
+            f"Please edit the image as per the following instructions: {prompt}",
+            image_to_edit
+        ],
+    )
+    with open("image_log.txt", "a", encoding="utf-8") as f:
+        f.write(f"Prompt: {prompt}\n")
+        f.write(f"Response: {response}\n\n")
+    captured_text = ""
+    for part in response.candidates[0].content.parts:
+            if part.inline_data:
+                print("Image data found in response parts.")
+                image_bytes = part.inline_data.data
+                img = Image.open(io.BytesIO(image_bytes))
+                return img 
+            
+            if part.text:
+                captured_text += part.text
+
+    print("No image found, returning text.")
+    return captured_text 
+            
+
+            
