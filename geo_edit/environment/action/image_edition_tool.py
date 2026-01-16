@@ -72,6 +72,8 @@ draw_line_function_declaration = {
 
 def image_crop_function(image_list, image_index: int, bounding_box: str) -> str | Image.Image:
     # Dummy implementation for illustration
+    if image_index < 0 or image_index >= len(image_list):
+        return "Error: Invalid image index."
     image_to_crop = image_list[image_index]
     # Parse bounding box
     coords = bounding_box.strip("\\boxed{}").split(",")
@@ -79,19 +81,21 @@ def image_crop_function(image_list, image_index: int, bounding_box: str) -> str 
     cropped_image = image_to_crop.crop((x1, y1, x2, y2))
     return cropped_image
 
-def image_label_function(image_list, image_index: int, text: str, position: str) -> str | Image.Image:
-
+def image_label_function(image_list, image_index: int, text: str| list, position: str) -> str | Image.Image:
+    if image_index < 0 or image_index >= len(image_list):
+        return "Error: Invalid image index."
     image_to_label = image_list[image_index]
     draw = ImageDraw.Draw(image_to_label)
     x, y = map(int, position.strip("()").split(","))
     # Using a default font
-    font = ImageFont.load_default()
+    font = ImageFont.truetype("arial.ttf", 15)
     draw.text((x, y), text, fill="red", font=font)
     
     return image_to_label
 
 def draw_line_function(image_list, image_index: int, coordinates: str) -> str | Image.Image:
-
+    if image_index < 0 or image_index >= len(image_list):
+        return "Error: Invalid image index."    
     image_to_draw = image_list[image_index]
     draw = ImageDraw.Draw(image_to_draw)
     coords = coordinates.strip("\\boxed{}").split(",")

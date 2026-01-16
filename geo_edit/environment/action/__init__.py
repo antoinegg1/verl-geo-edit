@@ -9,14 +9,14 @@ from .image_edition_tool import (
 )
 
 TOOL_FUNCTIONS_DECLARE = [
-    image_edit_function_declaration,
+    # image_edit_function_declaration,
     image_crop_function_declaration,
     image_label_function_declaration,
     draw_line_function_declaration,
 ]
 TOOL_FUNCTIONS={
-    "image_edition":image_edition_function,
-    "image_crop":image_crop_function,
+    # "image_edition":image_edition_function,
+    # "image_crop":image_crop_function,
     "image_label":image_label_function,
     "draw_line":draw_line_function,
 }

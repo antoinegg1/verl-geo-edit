@@ -30,7 +30,9 @@ def main():
     
     output_jsonl_path= args.output_dir
     os.makedirs(output_jsonl_path, exist_ok=True)
-    output_jsonl_path= os.path.join(output_jsonl_path, "output_tool_call_api.jsonl")
+    output_jsonl_path= os.path.join(output_jsonl_path, "output.jsonl")
+    extra_info_jsonl_path= os.path.join(args.output_dir, "extra_info.jsonl")
+    meta_info_jsonl_path= os.path.join(args.output_dir, "meta_info.jsonl")
     image_save_dir= os.path.join(args.output_dir, "images")
     os.makedirs(image_save_dir, exist_ok=True)
     
@@ -69,17 +71,48 @@ def main():
     # Load dataset
     
     INPUT_TEMPLATE= MATHVISION_INPUT_TEMPLATE
-    question= "User input: Simon has two identical tiles, whose front look like this: The back is white.\n<image1>\nWhich pattern can he make with those two tiles?\n<image2>"
+    question= "User input: In the picture on the right a number should be written next to each point. The sum of the numbers on the corners of each side of the hexagon should be equal. Two numbers have already been inserted. Which number should be in the place marked '$x$'?\n<image1>"
     options=""
-    image_url = "70.jpg"
+    image_url = "234.jpg"
     text_prompt= INPUT_TEMPLATE.format(question=question, options=options)
     image_input = Image.open(image_url).convert("RGB")
     image_list=[image_input]
+    image_path_map = {id(image_input): image_url}
     contents = [text_prompt]
     if image_input:
         contents.append("Observation 0:")
         contents.append(image_input)
-
+    def _stringify_observation_item(item):
+        if isinstance(item, Image.Image):
+            return {"image_data": image_path_map.get(id(item))}
+        if isinstance(item, types.Content):
+            parts=item.parts
+            listofdict_parts = []
+            for part in parts:
+                dict_part = {
+                    "text": part.text if part.text else None,
+                    "thought": part.thought,
+                    "function_call": {
+                        "name": part.function_call.name,
+                        "args": part.function_call.args,
+                    } if part.function_call else None,
+                    "function_response": {
+                        "name": part.function_response.name,
+                        "response": part.function_response.response,
+                    } if part.function_response else None,
+                }
+                listofdict_parts.append(dict_part)
+            item = {"parts": listofdict_parts, "role": item.role}
+        if isinstance(item, str) and item.startswith("parts=") and " role=" in item:
+            parts_str, role_part = item.split(" role=", 1)
+            role_part = role_part.strip()
+            if role_part.startswith("'") and role_part.endswith("'"):
+                role_part = role_part[1:-1]
+            return {
+                "parts": parts_str[len("parts="):],
+                "role": role_part,
+            }
+        return item
     conversation_history = []
     max_tool_calls = 8
     for i in range(max_tool_calls):
@@ -97,10 +130,11 @@ def main():
                 final_answer = part.text
             else:
                 continue
-        #TODO remove all Image.Image from contents to save correctly; only keep image_path. You can refer to the geo_edit directory for how to do this.
+        contents_for_save = [_stringify_observation_item(item) for item in contents]
         conversation_history.append({
             "step": i+1,
-            "observation": contents,
+            "observation": contents_for_save,
+            "action": _stringify_observation_item(action),
             "thinking_process": thinking_process,
             "final_answer": final_answer,
             "function_call": (function_call_part.function_call.name, function_call_part.function_call.args) if function_call_part else None,
@@ -124,8 +158,10 @@ def main():
             image_name = f"output_{len(image_list)-1}.jpg"
             image_path = os.path.join(image_save_dir, image_name)
             result.save(image_path)
+            image_path_map[id(result)] = image_path
             
             image_bytes = open(image_path, "rb").read()
+
             function_response_data = {
                 "image_ref": {f"Observation {len(image_list)-1}": image_name},
             }
@@ -137,6 +173,7 @@ def main():
                 )
             )
         else:
+            logging.error(f"Function {function_call.name} return {result}, expected an image.")
             raise ValueError("Function result is not an image.")
         contents.append(
             types.Content(role="tool",parts=[types.Part.from_function_response(
@@ -146,12 +183,104 @@ def main():
             )])
         )
     else:
-        print("Max tool calls reached without final response.")
+        logging.info("Max tool calls reached; forcing final answer without tool calls.")
+        FORCE_ANSWER_PROMPT = "Max tool calls reached. Please provide the final answer without further tool calls."
+        contents.append(FORCE_ANSWER_PROMPT)
+        force_tool_config = types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(mode="NONE")
+        )
+        force_generate_config = types.GenerateContentConfig(
+            tools=[tools],
+            thinking_config=generate_config.thinking_config,
+            tool_config=force_tool_config,
+            temperature=generate_config.temperature,
+            system_instruction=generate_config.system_instruction,
+            max_output_tokens=generate_config.max_output_tokens,
+            candidate_count=generate_config.candidate_count,
+        )
+        response = api_agent.client.models.generate_content(
+            model=api_agent.model,
+            contents=contents,
+            config=force_generate_config,
+        )
+        extra_info = {
+            "original_response": str(response),
+            "tokens_used": response.usage_metadata.total_token_count,
+            "model_name": api_agent.config.model_name,
+            "attempt": 1,
+            "step_count": api_agent.step_count,
+        }
+        api_agent.step_count += 1
+        if extra_info["tokens_used"]:
+            api_agent.total_tokens_used += extra_info["tokens_used"]
+        action = response.candidates[0].content
+        contents.append(action)
+        thinking_process = ""
+        final_answer = ""
+        for part in action.parts:
+            if part.thought:
+                thinking_process += part.text
+            elif part.text:
+                final_answer = part.text
+        contents_for_save = [_stringify_observation_item(item) for item in contents]
+        conversation_history.append({
+            "step": len(conversation_history) + 1,
+            "action": _stringify_observation_item(action),
+            "observation": contents_for_save,
+            "thinking_process": thinking_process,
+            "final_answer": final_answer,
+            "function_call": None,
+            "extra_info": extra_info,
+        })
+        
+    extra_info_list = []
+    function_call_total_count = 0
+    function_call_each_count = {}
+    function_call_per_step = []
+    tokens_used_total = 0
+    tokens_used_per_step = []
+    for record in conversation_history:
+        function_call = record.get("function_call")
+        if function_call:
+            function_call_total_count += 1
+            function_name = function_call[0]
+            function_call_each_count[function_name] = function_call_each_count.get(function_name, 0) + 1
+            function_call_per_step.append(function_name)
+        else:
+            function_call_per_step.append(None)
+        tokens_used = record.get("extra_info", {}).get("tokens_used", 0)
+        tokens_used_total += tokens_used
+        tokens_used_per_step.append(tokens_used)
+    meta_info = {
+        "function_call_total_count": function_call_total_count,
+        "total_steps": len(conversation_history),
+        "function_call_each_count": function_call_each_count,
+        "function_call_per_step": function_call_per_step,
+        "tokens_used_total": tokens_used_total,
+        "tokens_used_per_step": tokens_used_per_step,
+        "final_answer": conversation_history[-1]["final_answer"] if conversation_history else "",
+    }
+    last_step_index = len(conversation_history) - 1
+    for idx, record in enumerate(conversation_history):
+        observation = record.get("observation")
+        extra_info_list.append({
+            "step": record["step"],
+            "extra_info": record.pop("extra_info"),
+            "observation": observation,
+        })
+        if idx != last_step_index:
+            record.pop("observation", None)
     
-    
+    with open(extra_info_jsonl_path, "w", encoding="utf-8") as f:
+        for record in extra_info_list:
+            f.write(json.dumps(record) + "\n")
+
     with open(output_jsonl_path, "w", encoding="utf-8") as f:
         for record in conversation_history:
             f.write(json.dumps(record) + "\n")
+    
+    with open(meta_info_jsonl_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(meta_info) + "\n")
             
 if __name__ == "__main__":
     main()

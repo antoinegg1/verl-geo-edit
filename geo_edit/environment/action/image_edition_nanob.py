@@ -44,9 +44,6 @@ def image_edition_function(image_list, image_index: int, prompt: str) -> str | I
             image_to_edit
         ],
     )
-    with open("image_log.txt", "a", encoding="utf-8") as f:
-        f.write(f"Prompt: {prompt}\n")
-        f.write(f"Response: {response}\n\n")
     captured_text = ""
     for part in response.candidates[0].content.parts:
             if part.inline_data:
