@@ -13,18 +13,22 @@ class VisionQATask(AbstractVLMTask):
         self,
         task_id: str,
         dataset_path: str,
+        input_template: str=None,
         **kwargs
     ):
         super().__init__(task_id)
         self.dataset_path = Path(dataset_path)
+        self.input_template = input_template
         self.current_image: Optional[Image.Image] = None
         self.current_question: Optional[str] = None
         self.expected_answer: Optional[str] = None
         self.task_data: Dict[str, Any] = {}
         
+        
     def setup(self) -> Tuple[str, Dict[str, Any]]:
         """task setting"""
-        
+        if self.task_id=="sample_task":
+            
         task_file = self.dataset_path / f"{self.task_id}.json"
         if not task_file.exists():
             raise ValueError(f"Task file not found: {task_file}")
@@ -42,6 +46,8 @@ class VisionQATask(AbstractVLMTask):
         
         # build task goal
         task_goal = f"Please answer the following question about the image: {self.current_question}"
+        if self.input_template:
+            task_goal = self.input_template.format(question=self.current_question)  
         
         task_info = {
             "image_size": self.current_image.size,

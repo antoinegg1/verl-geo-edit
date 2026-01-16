@@ -7,12 +7,14 @@ import requests
 import argparse
 from ..agents.api_agent import APIBasedAgent, AgentConfig
 from ..environment.action import TOOL_FUNCTIONS, TOOL_FUNCTIONS_DECLARE
+from ..environment.task.vision_qa_task import VisionQATask
 from ..config import API_KEY
 from ..constants import SYSTEM_PROMPT,MATHVISION_INPUT_TEMPLATE
 from datasets import load_dataset
 import logging
 import json
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def main():
@@ -39,11 +41,17 @@ def main():
     max_output_tokens=65536
     
     tools = types.Tool(function_declarations=TOOL_FUNCTIONS_DECLARE)
+    # tool_config = types.ToolConfig(
+    #     function_calling_config=types.FunctionCallingConfig(
+    #         mode="ANY", allowed_function_names=list(TOOL_FUNCTIONS.keys())
+    #     )
+    # )
     tool_config = types.ToolConfig(
         function_calling_config=types.FunctionCallingConfig(
-            mode="ANY", allowed_function_names=list(TOOL_FUNCTIONS.keys())
+            mode="AUTO"
         )
     )
+
 
     generate_config = types.GenerateContentConfig(
         tools=[tools],
@@ -69,7 +77,8 @@ def main():
     api_agent=APIBasedAgent(config)
     
     # Load dataset
-    
+    visionqatask=VisionQATask(dataset_path=dataset_path, task_id="sample_task",input_template=MATHVISION_INPUT_TEMPLATE)
+    task_goal, task_info= visionqatask.setup()
     INPUT_TEMPLATE= MATHVISION_INPUT_TEMPLATE
     question= "User input: In the picture on the right a number should be written next to each point. The sum of the numbers on the corners of each side of the hexagon should be equal. Two numbers have already been inserted. Which number should be in the place marked '$x$'?\n<image1>"
     options=""
@@ -120,10 +129,10 @@ def main():
         contents.append(action)
         thinking_process = ""
         final_answer = ""
-        function_call_part = None
+        function_call_part_list=[]
         for part in action.parts:
             if part.function_call:
-                function_call_part = part
+                function_call_part_list.append(part)
             elif part.thought:
                 thinking_process += part.text
             elif part.text:
@@ -137,28 +146,50 @@ def main():
             "action": _stringify_observation_item(action),
             "thinking_process": thinking_process,
             "final_answer": final_answer,
-            "function_call": (function_call_part.function_call.name, function_call_part.function_call.args) if function_call_part else None,
+            "function_call": [(function_call_part.function_call.name, function_call_part.function_call.args) for function_call_part in function_call_part_list] if function_call_part_list else None,
             "extra_info": extra_info,
         })
     
-        if not function_call_part or not function_call_part.function_call:
+        if not function_call_part_list or not function_call_part_list[-1].function_call:
             logging.info("Final response generated without further tool calls.")
             break
-        
-        function_call = function_call_part.function_call
-        logging.info(f"Function to call: {function_call.name}")
-        logging.info(f"Arguments: {function_call.args}")
-        if function_call.name in TOOL_FUNCTIONS.keys():
-            function_to_call = TOOL_FUNCTIONS[function_call.name]
-            result = function_to_call(image_list, **function_call.args)
-        else:
-            result = {"error": f"Unknown function {function_call.name}"}
-        if isinstance(result, Image.Image):
-            image_list.append(result)
+        dynamic_image = None
+        dynamic_image_index = None
+        last_function_call = None
+        error_result = None
+        for function_call_part in function_call_part_list:
+            function_call = function_call_part.function_call
+            last_function_call = function_call
+            logging.info(f"Function to call: {function_call.name}")
+            logging.info(f"Arguments: {function_call.args}")
+            if function_call.name in TOOL_FUNCTIONS.keys():
+                function_to_call = TOOL_FUNCTIONS[function_call.name]
+                if dynamic_image is not None and dynamic_image_index is not None:
+                    dynamic_image_list = list(image_list)
+                    dynamic_image_list[dynamic_image_index] = dynamic_image
+                else:
+                    dynamic_image_list = image_list
+                try:
+                    result = function_to_call(dynamic_image_list, **function_call.args)
+                except Exception as e:
+                    result = {"error": str(e)}
+            else:
+                result = {"error": f"Unknown function {function_call.name}"}
+            if isinstance(result, Image.Image):
+                dynamic_image = result
+                dynamic_image_index = function_call.args.get("image_index", dynamic_image_index)
+            else:
+                logging.warning(f"Function call failed as {result}")
+                dynamic_image = None
+                error_result = result
+                break
+                
+        if isinstance(dynamic_image, Image.Image):
+            image_list.append(dynamic_image)
             image_name = f"output_{len(image_list)-1}.jpg"
             image_path = os.path.join(image_save_dir, image_name)
-            result.save(image_path)
-            image_path_map[id(result)] = image_path
+            dynamic_image.save(image_path)
+            image_path_map[id(dynamic_image)] = image_path
             
             image_bytes = open(image_path, "rb").read()
 
@@ -172,16 +203,26 @@ def main():
                     data=image_bytes,
                 )
             )
-        else:
-            logging.error(f"Function {function_call.name} return {result}, expected an image.")
-            raise ValueError("Function result is not an image.")
-        contents.append(
-            types.Content(role="tool",parts=[types.Part.from_function_response(
-            name=function_call.name,
-            response=function_response_data,
-            parts=[function_response_multimodal_data]
+            contents.append(
+                types.Content(role="tool",parts=[types.Part.from_function_response(
+                name=last_function_call.name,
+                response=function_response_data,
+                parts=[function_response_multimodal_data]
             )])
         )
+        else:
+            contents.append(
+                types.Content(
+                    role="tool",
+                    parts=[
+                        types.Part.from_function_response(
+                            name=last_function_call.name,
+                            response={"error": error_result.get("error", "Unknown error")},
+                        )
+                    ],
+                )
+            )
+        
     else:
         logging.info("Max tool calls reached; forcing final answer without tool calls.")
         FORCE_ANSWER_PROMPT = "Max tool calls reached. Please provide the final answer without further tool calls."
@@ -232,7 +273,6 @@ def main():
             "function_call": None,
             "extra_info": extra_info,
         })
-        
     extra_info_list = []
     function_call_total_count = 0
     function_call_each_count = {}
@@ -242,16 +282,21 @@ def main():
     for record in conversation_history:
         function_call = record.get("function_call")
         if function_call:
-            function_call_total_count += 1
-            function_name = function_call[0]
-            function_call_each_count[function_name] = function_call_each_count.get(function_name, 0) + 1
-            function_call_per_step.append(function_name)
+            function_call_total_count += len(function_call)
+            function_names = []
+            for function_name, _ in function_call:
+                function_call_each_count[function_name] = function_call_each_count.get(function_name, 0) + 1
+                function_names.append(function_name)
+            function_call_per_step.append(function_names)
         else:
             function_call_per_step.append(None)
         tokens_used = record.get("extra_info", {}).get("tokens_used", 0)
         tokens_used_total += tokens_used
         tokens_used_per_step.append(tokens_used)
     meta_info = {
+        "question": question,
+        "options": options,
+        "image_path": image_url,
         "function_call_total_count": function_call_total_count,
         "total_steps": len(conversation_history),
         "function_call_each_count": function_call_each_count,
