@@ -6,16 +6,6 @@ class AbstractVLMTask(ABC):
     
     def __init__(self, task_id: str):
         self.task_id = task_id
-        
-    @abstractmethod
-    def setup(self) -> Tuple[str, Dict[str, Any]]:
-        """task setting
-        
-        Returns:
-            task_goal: description of task goal
-            task_info: related information of goal
-        """
-        pass
     
     @abstractmethod
     def validate(
@@ -43,6 +33,3 @@ class AbstractVLMTask(ABC):
         """get current information"""
         pass
     
-    def teardown(self):
-        """clear up the task resource（optional）"""
-        pass
