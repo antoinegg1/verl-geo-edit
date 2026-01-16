@@ -49,7 +49,7 @@ class AgentConfig:
     
     def __post_init__(self):
         """Validate configuration after initialization"""
-        valid_model_types = ["HuggingFace", "vLLM", "OpenAI", "Azure"]
+        valid_model_types = ["HuggingFace", "vLLM", "OpenAI", "Azure","Google"]
         if self.model_type not in valid_model_types:
             raise ValueError(f"model_type must be one of {valid_model_types}, got {self.model_type}")
         
@@ -68,8 +68,11 @@ class BaseAgent(ABC):
             config: Dictionary containing agent configuration
         """
         # Parse configuration
-        if isinstance(config.get('agent'), dict):
-            self.config = AgentConfig(**config['agent'])
+        # if isinstance(config.get('agent'), dict):
+        #     self.config = AgentConfig(**config['agent'])
+        # else:
+        if isinstance(config, AgentConfig):
+            self.config = config
         else:
             self.config = AgentConfig(**config)
         

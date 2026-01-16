@@ -34,8 +34,14 @@ class APIBasedAgent(BaseAgent):
         else:
             raise NotImplementedError(f"Model type {self.config.model_type} not supported yet.")
     
-    # def _prepare_input(self, observation: Dict[str, Any]) -> Any:
-    # API agent does not need to prepare input as the input is directly a list of dict.
+    def _prepare_input(self, observation: Dict[str, Any]) -> Any:
+        # API agent does not need to prepare input as the input is directly a list of dict.
+        return observation
+    
+    def _parse_response(self, raw_response: str, observation: Dict[str, Any]) -> str:
+        # API agent does not need to parse response as the response is directly returned.
+        return raw_response
+
     def _generate_response(self, model_input: List[Dict[str, Any]]) -> Tuple[str, Dict[str, Any],List[Dict[str, Any]]]:
         """Generate response using the model
         
@@ -63,8 +69,7 @@ class APIBasedAgent(BaseAgent):
 
         return content, extra_info
 
-    
-    def act(self, observation:List[Dict[str, Any]]) -> Tuple[str, Dict[str, Any]]:
+    def act(self, observation:List[Dict[str, Any]]) -> Tuple[types.Content, Dict[str, Any]]:
         if self.client is None:
             self.load_model()
 
