@@ -7,11 +7,32 @@ import numpy as np
 import logging
 import json
 import os
+from .base import AbstractVLMTask
+import colorlog
 
-logging.basicConfig(level=logging.INFO)
+def setup_logger(level=logging.INFO):
+    handler = colorlog.StreamHandler()
+    handler.setFormatter(colorlog.ColoredFormatter(
+        "%(log_color)s%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        log_colors={
+            "DEBUG": "cyan",
+            "INFO": "white",
+            "WARNING": "yellow",
+            "ERROR": "red",
+            "CRITICAL": "bold_red",
+        },
+    ))
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+
+setup_logger(logging.INFO)
 logger = logging.getLogger(__name__)
 
-from .base import AbstractVLMTask
+
 
 class VisionQATask(AbstractVLMTask):
     """vision qa task"""
@@ -31,6 +52,7 @@ class VisionQATask(AbstractVLMTask):
         self.task_answer = task_answer
         self.task_image_path = task_image_path
         self.tool_functions = tool_functions 
+        self.state=True
         self.options = kwargs.get("options", None)
         
         

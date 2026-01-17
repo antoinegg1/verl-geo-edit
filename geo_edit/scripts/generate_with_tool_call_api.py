@@ -14,8 +14,28 @@ from ..constants import SYSTEM_PROMPT,MATHVISION_INPUT_TEMPLATE,MAX_TOOL_CALLS
 from datasets import load_dataset
 import logging
 from tqdm import tqdm
+import colorlog
+import shutil
+def setup_logger(level=logging.INFO):
+    handler = colorlog.StreamHandler()
+    handler.setFormatter(colorlog.ColoredFormatter(
+        "%(log_color)s%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        log_colors={
+            "DEBUG": "cyan",
+            "INFO": "white",
+            "WARNING": "yellow",
+            "ERROR": "red",
+            "CRITICAL": "bold_red",
+        },
+    ))
 
-logging.basicConfig(level=logging.INFO)
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level)
+
+setup_logger(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -119,12 +139,15 @@ def main():
     
         max_tool_calls = MAX_TOOL_CALLS
         for i in range(max_tool_calls):
-            action, extra_info = api_agent.act(task.contents)
-            if action.parts is None:
-                    print(action.parts)
-                    raise ValueError("Generated content is None.")
             
-            function_call_part_list = task.parse_action(step=i+1, action=action, extra_info=extra_info)
+            try:
+                action, extra_info = api_agent.act(task.contents)
+                function_call_part_list = task.parse_action(step=i+1, action=action, extra_info=extra_info)
+            except Exception as e:
+                task.state = False
+                shutil.rmtree(task_save_dir)
+                logging.error(f"Error during agent action for example id: {id} at step {i+1}: {e}")
+                break
         
             if not function_call_part_list or not function_call_part_list[-1].function_call:
                 logging.info("Final response generated without further tool calls.")
@@ -151,9 +174,12 @@ def main():
             action, extra_info = api_agent.act(task.contents)
             
             _ = task.parse_action(step=max_tool_calls + 1, action=action, extra_info=extra_info)
-    
-        meta_info = task.save_trajectory()
-        meta_info_list.append(meta_info)
+
+        if task.state:
+            meta_info = task.save_trajectory()
+            meta_info_list.append(meta_info)
+        else:
+            continue
     
     total_tool_calls = 0
     total_tokens = 0

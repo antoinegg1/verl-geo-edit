@@ -3,7 +3,8 @@ image_crop_function_declaration = {
     "name":"image_crop",
     "description":'''
     Calling an image cropping tool with existing image index (e.g. 0 from 'Observation 0', 1 from 'Observation 1') to crop the image as per the given bounding box coordinates. Returns the cropped image.
-    The bounding box should be provided in the format "\\boxed{x1,y1,x2,y2}" where (x1, y1) is the top-left corner and (x2, y2) is the bottom-right corner of the box. All (x,y) should be larger than or equal to 0 and smaller than or equal to 1000 as a unified image size (1000x1000). This function can only be called once per action.
+    The bounding box should be provided in the format "\\boxed{x1,y1,x2,y2}" where (x1, y1) is the top-left corner and (x2, y2) is the bottom-right corner of the box. All (x,y) should be larger than or equal to 0 and smaller than or equal to 1000 as a unified image size (1000x1000). 
+    **This function can only be called once per action.**
     For example, to crop a specific area from the image Observation 0, you can provide the bounding box coordinates like "\\boxed{50,50,200,200}" along with the image index 0.
     ''',
     "parameters":{
