@@ -53,3 +53,5 @@ EVAL_QUERY_PROMPT = (
     'Your response should include an integer score indicating the correctness of the prediction: 1 for correct and 0 for incorrect.\n'
     'The format should be "Score: 0 or 1"'
 )
+
+MAX_TOOL_CALLS = 8

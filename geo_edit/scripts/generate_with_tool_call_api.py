@@ -1,5 +1,6 @@
 from google import genai
 import io
+import json
 import os
 from google.genai import types
 from PIL import Image
@@ -9,13 +10,15 @@ from ..agents.api_agent import APIBasedAgent, AgentConfig
 from ..environment.action import TOOL_FUNCTIONS, TOOL_FUNCTIONS_DECLARE
 from ..environment.task.vision_qa_task import VisionQATask
 from ..config import API_KEY
-from ..constants import SYSTEM_PROMPT,MATHVISION_INPUT_TEMPLATE
+from ..constants import SYSTEM_PROMPT,MATHVISION_INPUT_TEMPLATE,MAX_TOOL_CALLS
 from datasets import load_dataset
 import logging
-import json
+from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
 
 def main():
     # argparse 
@@ -25,15 +28,23 @@ def main():
     parser.add_argument("--output_dir", type=str, required=True, help="Path to save the output JSONL file.")
     parser.add_argument("--model_name_or_path", type=str, default="gemini-3-flash-preview", help="Model name or path.")
     parser.add_argument("--max_concurrent_requests", type=int, default=32, help="Maximum number of concurrent requests.")
+    parser.add_argument("--sample_rate", type=float, default=0.1, help="Sampling rate for the dataset.")
     args = parser.parse_args()
-    
+    seed=42
     api_key= args.api_key
     dataset_path= args.dataset_path
-    dataset= load_dataset("json", data_files=dataset_path)["train"]
+    dataset= load_dataset("parquet", data_files=dataset_path)["train"]
+
+    if args.sample_rate<1.0:
+        sample_size= int(len(dataset)* args.sample_rate)
+        dataset= dataset.shuffle(seed=seed).select(range(sample_size))
+        logger.info(f"Sampled {sample_size} examples from the dataset.")
     
     output_path= args.output_dir
+
     
-        max_output_tokens=65536
+    
+    max_output_tokens=65536
     
     tools = types.Tool(function_declarations=TOOL_FUNCTIONS_DECLARE)
     # tool_config = types.ToolConfig(
@@ -67,55 +78,109 @@ def main():
     )
     api_agent=APIBasedAgent(config)
     
-    # Load dataset
+    meta_info_list= []
     INPUT_TEMPLATE= MATHVISION_INPUT_TEMPLATE
-    question= "User input: In the picture on the right a number should be written next to each point. The sum of the numbers on the corners of each side of the hexagon should be equal. Two numbers have already been inserted. Which number should be in the place marked '$x$'?\n<image1>"
-    options=""
-    image_url = "234.jpg"
-    text_prompt= INPUT_TEMPLATE.format(question=question, options=options)
-    
-    task= VisionQATask(
-        task_id="sample_task",
-        task_prompt=text_prompt,
-        task_answer="",
-        task_image_path=image_url,
-        tool_functions=TOOL_FUNCTIONS,
-        save_dir=output_path,
-    )
-    
-    max_tool_calls = 8
-    for i in range(max_tool_calls):
-        action, extra_info = api_agent.act(task.contents)
+    for item in tqdm(dataset):
+        api_agent.reset()
+        id= item["original_id"]
+        if os.path.exists(os.path.join(output_path, id)):
+            # Add meta info loading
+            with open(os.path.join(output_path, id, "meta_info.jsonl"), "r", encoding="utf-8") as f:
+                meta_info= json.loads(f.readline().strip())
+                meta_info_list.append(meta_info)
+            logging.info(f"Example id: {id} already processed, skipping.")
+            continue
+        logging.info(f"Processing example id: {id}")
         
-        function_call_part_list = task.parse_action(step=i+1, action=action, extra_info=extra_info)
-    
-        if not function_call_part_list or not function_call_part_list[-1].function_call:
-            logging.info("Final response generated without further tool calls.")
-            break
+        task_save_dir= os.path.join(output_path, id)
+        os.makedirs(task_save_dir, exist_ok=True)
+        question= item["reasoning_q"]
+        options= item.get("options", "")
+        answer= item["reasoning_a"]
+        if isinstance(item["image"], Image.Image):
+            image= item["image"]
+            image_url= os.path.join(task_save_dir, "input_image.jpg")
+            image.save(image_url)
+        else:
+            image_url= item["image"]
         
-        task.update_observation_from_action(function_call_part_list)   
-    else:
-        logging.info("Max tool calls reached; forcing final answer without tool calls.")
-        FORCE_ANSWER_PROMPT = "Max tool calls reached. Please provide the final answer without further tool calls."
-        task.contents.append(FORCE_ANSWER_PROMPT)
-        force_tool_config = types.ToolConfig(
-            function_calling_config=types.FunctionCallingConfig(mode="NONE")
+        
+        text_prompt= INPUT_TEMPLATE.format(question=question, options=options)
+        
+        
+        task= VisionQATask(
+            task_id=id,
+            task_prompt=text_prompt,
+            task_answer=answer,
+            task_image_path=image_url,
+            tool_functions=TOOL_FUNCTIONS,
+            save_dir=task_save_dir,
         )
-        force_generate_config = types.GenerateContentConfig(
-            tools=[tools],
-            thinking_config=generate_config.thinking_config,
-            tool_config=force_tool_config,
-            temperature=generate_config.temperature,
-            system_instruction=generate_config.system_instruction,
-            max_output_tokens=generate_config.max_output_tokens,
-            candidate_count=generate_config.candidate_count,
-        )
-        api_agent.config.generate_config = force_generate_config
-        action, extra_info = api_agent.act(task.contents)
+    
+        max_tool_calls = MAX_TOOL_CALLS
+        for i in range(max_tool_calls):
+            action, extra_info = api_agent.act(task.contents)
+            if action.parts is None:
+                    print(action.parts)
+                    raise ValueError("Generated content is None.")
+            
+            function_call_part_list = task.parse_action(step=i+1, action=action, extra_info=extra_info)
         
-        _ = task.parse_action(step=max_tool_calls + 1, action=action, extra_info=extra_info)
-  
-    task.save_trajectory()
+            if not function_call_part_list or not function_call_part_list[-1].function_call:
+                logging.info("Final response generated without further tool calls.")
+                break
+            
+            task.update_observation_from_action(function_call_part_list)   
+        else:
+            logging.info("Max tool calls reached; forcing final answer without tool calls.")
+            FORCE_ANSWER_PROMPT = "Max tool calls reached. Please provide the final answer without further tool calls."
+            task.contents.append(FORCE_ANSWER_PROMPT)
+            force_tool_config = types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(mode="NONE")
+            )
+            force_generate_config = types.GenerateContentConfig(
+                tools=[tools],
+                thinking_config=generate_config.thinking_config,
+                tool_config=force_tool_config,
+                temperature=generate_config.temperature,
+                system_instruction=generate_config.system_instruction,
+                max_output_tokens=generate_config.max_output_tokens,
+                candidate_count=generate_config.candidate_count,
+            )
+            api_agent.config.generate_config = force_generate_config
+            action, extra_info = api_agent.act(task.contents)
+            
+            _ = task.parse_action(step=max_tool_calls + 1, action=action, extra_info=extra_info)
+    
+        meta_info = task.save_trajectory()
+        meta_info_list.append(meta_info)
+    
+    total_tool_calls = 0
+    total_tokens = 0
+    tool_usage_counts = {}
+    reach_max_tool_call_count = 0
+    direct_answer_count = 0
+    for info in meta_info_list:
+        total_tool_calls += info["function_call_total_count"]
+        total_tokens += info["tokens_used_total"]
+        if info["total_steps"] >= MAX_TOOL_CALLS :
+            reach_max_tool_call_count += 1
+        if info["function_call_total_count"] == 0:
+            direct_answer_count += 1
+        for tool_name, count in info["function_call_each_count"].items():
+            tool_usage_counts[tool_name] = tool_usage_counts.get(tool_name, 0) + count
+
+    global_meta_info = {
+        "total_examples": len(meta_info_list),
+        "total_tool_calls": total_tool_calls,
+        "total_tokens": total_tokens,
+        "tool_usage_counts": tool_usage_counts,
+        "reach_max_tool_call_count": reach_max_tool_call_count,
+        "direct_answer_count": direct_answer_count,
+    }
+    global_meta_info_jsonl_path = os.path.join(output_path, "global_meta_info.jsonl")
+    with open(global_meta_info_jsonl_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(global_meta_info) + "\n")
             
 if __name__ == "__main__":
     main()

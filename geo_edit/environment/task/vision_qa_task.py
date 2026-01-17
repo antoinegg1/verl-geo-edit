@@ -102,7 +102,7 @@ class VisionQATask(AbstractVLMTask):
         """update task contents from action"""
         self.contents.append(action)
         thinking_process = ""
-        final_answer = ""
+        output_text = ""
         function_call_part_list = []
         for part in action.parts:
             if part.thought:
@@ -110,7 +110,7 @@ class VisionQATask(AbstractVLMTask):
             elif part.function_call:
                 function_call_part_list.append(part)
             elif part.text:
-                final_answer = part.text
+                output_text += part.text
             else:
                 continue
         contents_for_save=[self._stringify_observation_item(item) for item in self.contents]
@@ -119,7 +119,7 @@ class VisionQATask(AbstractVLMTask):
             "observation": contents_for_save,
             "action": self._stringify_observation_item(action),
             "thinking_process": thinking_process,
-            "final_answer": final_answer,
+            "output_text": output_text,
             "function_call": [(function_call_part.function_call.name, function_call_part.function_call.args) for function_call_part in function_call_part_list] if function_call_part_list else None,
             "extra_info": extra_info,
         })
@@ -235,6 +235,7 @@ class VisionQATask(AbstractVLMTask):
         meta_info = {
             "question": self.task_prompt,
             "options": self.options,
+            "answer": self.task_answer,
             "image_path": self.task_image_path,
             "function_call_total_count": function_call_total_count,
             "total_steps": len(self.conversation_history),
@@ -242,7 +243,7 @@ class VisionQATask(AbstractVLMTask):
             "function_call_per_step": function_call_per_step,
             "tokens_used_total": tokens_used_total,
             "tokens_used_per_step": tokens_used_per_step,
-            "final_answer": self.conversation_history[-1]["final_answer"] if self.conversation_history else "",
+            "output_text": self.conversation_history[-1]["output_text"] if self.conversation_history else "",
         }
         
         last_step_index = len(self.conversation_history) - 1
@@ -267,3 +268,4 @@ class VisionQATask(AbstractVLMTask):
         with open(self.meta_info_jsonl_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(meta_info) + "\n")
             
+        return meta_info

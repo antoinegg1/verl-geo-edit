@@ -5,6 +5,7 @@ from google.genai import types
 from PIL import Image
 import logging
 import time
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class APIBasedAgent(BaseAgent):
@@ -78,6 +79,9 @@ class APIBasedAgent(BaseAgent):
                 model_input=observation
                 
                 content, extra_info = self._generate_response(model_input)
+                if content.parts is None:
+                    logging.warning(f"Generated content parts is None: {content}")
+                    raise ValueError("Generated content is None.")
                 
                 extra_info.update({
                     "model_name": self.config.model_name,
@@ -89,7 +93,7 @@ class APIBasedAgent(BaseAgent):
                 if 'tokens_used' in extra_info:
                     self.total_tokens_used += extra_info['tokens_used']
                     
-                logger.debug(f"Step {self.step_count}: Generated response in attempt {attempt + 1}")
+                logger.info(f"Step {self.step_count}: Generated response in attempt {attempt + 1}")
 
                 return content, extra_info
             
@@ -102,15 +106,10 @@ class APIBasedAgent(BaseAgent):
                     error_msg = f"Failed after {self.config.n_retry} attempts: {str(e)}"
                     logger.error(error_msg)
                     
-                    return f"Error: {str(e)}", {
-                        "error": str(e),
-                        "attempt": self.config.n_retry,
-                        "step_count": self.step_count
-                    }
+                    raise RuntimeError(error_msg)
 
     def reset(self):
         """Reset agent state"""
-        self.conversation_history = []
         self.step_count = 0
         self.total_tokens_used = 0
         self.cost = []
@@ -127,5 +126,4 @@ class APIBasedAgent(BaseAgent):
             'total_tokens_used': self.total_tokens_used,
             'total_cost': sum(self.cost),
             'config': self.config.__dict__,
-            'conversation_history_length': len(self.conversation_history)
         }
