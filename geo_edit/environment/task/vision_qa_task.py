@@ -125,7 +125,7 @@ class VisionQATask(AbstractVLMTask):
         })
         
         return function_call_part_list
-    
+
     def update_observation_from_action(self, function_call_part_list: Any):
         
         dynamic_image=None
@@ -137,16 +137,19 @@ class VisionQATask(AbstractVLMTask):
             logging.info(f"Processing function call: {function_call.name} with args: {function_call.args}")
             if function_call.name in self.tool_functions.keys():
                 function_to_call=self.tool_functions[function_call.name]
+                dynamic_image_list = [img.copy() for img in self.image_list]
                 if dynamic_image is not None and dynamic_image_index is not None:
-                    dynamic_image_list = list(self.image_list)
-                    dynamic_image_list[dynamic_image_index] = dynamic_image
-                else:
-                    dynamic_image_list = self.image_list
+                    dynamic_image_list[dynamic_image_index] = dynamic_image.copy()
                 try:
+                    
                     result=function_to_call(dynamic_image_list, **function_call.args)
                     
                     dynamic_image = result
-                    dynamic_image_index = function_call.args.get("image_index", dynamic_image_index)
+                    if dynamic_image_index is not None:
+                        assert dynamic_image_index==function_call.args.get("image_index"), \
+                            f"Function call image_index {function_call.args.get('image_index')} inconsistent with last successful function call image_index {dynamic_image_index}"
+                    else:
+                        dynamic_image_index = function_call.args.get("image_index", dynamic_image_index)
                     last_success_function_call = function_call
                     
                 except Exception as e:
@@ -159,7 +162,9 @@ class VisionQATask(AbstractVLMTask):
                 error_result.append(result)
 
         if isinstance(dynamic_image, Image.Image):
-            self.image_list.append(dynamic_image)
+            self.image_list.append(dynamic_image.copy())
+           
+            
             image_name=f"output_{len(self.image_list)-1}.jpg"
             image_path=os.path.join(self.image_save_dir, image_name)
             dynamic_image.save(image_path)

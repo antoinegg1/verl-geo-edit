@@ -10,7 +10,7 @@ from ..environment.action import TOOL_FUNCTIONS, TOOL_FUNCTIONS_DECLARE
 from ..environment.task.vision_qa_task import VisionQATask
 from ..config import API_KEY
 from ..constants import SYSTEM_PROMPT,MATHVISION_INPUT_TEMPLATE
-
+from datasets import load_dataset
 import logging
 import json
 
@@ -29,24 +29,23 @@ def main():
     
     api_key= args.api_key
     dataset_path= args.dataset_path
+    dataset= load_dataset("json", data_files=dataset_path)["train"]
     
     output_path= args.output_dir
     
-    max_output_tokens=65536
+        max_output_tokens=65536
     
     tools = types.Tool(function_declarations=TOOL_FUNCTIONS_DECLARE)
-    tool_config = types.ToolConfig(
-        function_calling_config=types.FunctionCallingConfig(
-            mode="ANY", allowed_function_names=list(TOOL_FUNCTIONS.keys())
-        )
-    )
     # tool_config = types.ToolConfig(
     #     function_calling_config=types.FunctionCallingConfig(
-    #         mode="AUTO"
+    #         mode="ANY", allowed_function_names=list(TOOL_FUNCTIONS.keys())
     #     )
     # )
-
-
+    tool_config = types.ToolConfig(
+        function_calling_config=types.FunctionCallingConfig(
+            mode="AUTO"
+        )
+    )
     generate_config = types.GenerateContentConfig(
         tools=[tools],
         thinking_config=types.ThinkingConfig(
@@ -59,7 +58,6 @@ def main():
         max_output_tokens=max_output_tokens,
         candidate_count=1,
     )
-
     config = AgentConfig(
         model_type="Google",
         model_name=args.model_name_or_path,
@@ -67,7 +65,6 @@ def main():
         generate_config=generate_config,
         n_retry=3,
     )
-    
     api_agent=APIBasedAgent(config)
     
     # Load dataset
