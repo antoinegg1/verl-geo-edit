@@ -1,11 +1,21 @@
+import argparse
+import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import List, Optional, Union
-from ..constants import EVAL_QUERY_PROMPT, EVAL_SYSTEM_PROMPT 
+from typing import Iterable, List, Optional, Union
+from ..constants import EVAL_QUERY_PROMPT, EVAL_SYSTEM_PROMPT
 from openai import OpenAI
 
 ANSWER_TEMPLATE = "<answer>{}</answer>"
+
+
+@dataclass
+class EvalConfig:
+    model: str = "gpt-5-mini"
+    extract_answer_tags: Optional[str] = "split"
+
 
 def parse_score(text: str) -> str:
     """
@@ -22,7 +32,7 @@ def extract_answer(text: str, mode: str) -> Optional[str]:
       - "split": 宽松 split
       - "strict": 任意位置匹配 ANSWER_TEMPLATE
     """
-    parts=ANSWER_TEMPLATE.split("{}")
+    parts = ANSWER_TEMPLATE.split("{}")
     if mode == "split":
         if parts[0] not in text or parts[1] not in text:
             return None
@@ -61,7 +71,7 @@ class OpenAIJudge:
     """
     使用 OpenAI 官方 SDK + Responses API 做 0/1 判分。
     """
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4.1-mini"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-5-mini"):
         self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
         self.model = model
 
@@ -106,18 +116,102 @@ def evaluate_final_answer(
     return 1.0 if score_str == "1" else 0.0
 
 
-if __name__ == "__main__":
-    question = "Elena Ferrante"
-    predict_str_list = [
-        """<think>To determine the name ...</think> <grounding>{"bbox_2d": [2761, 715, 3160, 896]}</grounding>""",
-        """<think>To determine the name ...</think> <answer>The name of the store with a blue sign is "J&optica."</answer>""",
-    ]
-    ground_truth = "Jptica"
+def iter_meta_info_files(result_path: str) -> Iterable[str]:
+    for name in os.listdir(result_path):
+        subdir = os.path.join(result_path, name)
+        if not os.path.isdir(subdir):
+            continue
+        meta_path = os.path.join(subdir, "meta_info.jsonl")
+        if os.path.isfile(meta_path):
+            yield meta_path
 
-    cfg = {
-        "model": "gpt-4.1-mini",
-        "extract_answer_tags": "strict",
+
+def load_records(meta_path: str) -> Iterable[dict]:
+    with open(meta_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                raise ValueError(f"Invalid JSON line in {meta_path}: {line}")
+
+
+def evaluate_record(record: dict, cfg: EvalConfig, record_id: str) -> dict:
+    question = record["question"]
+    ground_truth = record["answer"]
+    output_text = record["output_text"]
+    if isinstance(output_text, list):
+        predict_str_list = [str(x) for x in output_text]
+    else:
+        predict_str_list = [str(output_text)]
+    result = evaluate_final_answer(question, predict_str_list, ground_truth, cfg)
+    return {
+        "id": record_id,
+        "question": question,
+        "answer": ground_truth,
+        "output_text": output_text,
+        "result": result,
     }
 
-    result = evaluate_final_answer(question, predict_str_list, ground_truth, cfg)
-    print(result)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Batch evaluate results with OpenAI judge.")
+    parser.add_argument("--api_key", type=str, required=True, help="OpenAI API key.")
+    parser.add_argument(
+        "--result_path",
+        type=str,
+        required=True,
+        help="Path containing subdirectories with meta_info.jsonl.",
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        required=True,
+        help="Path to write eval_result.jsonl and summary.txt.",
+    )
+    args = parser.parse_args()
+
+    os.environ["OPENAI_API_KEY"] = args.api_key
+    os.makedirs(args.output_path, exist_ok=True)
+
+    cfg = EvalConfig()
+    eval_output_path = os.path.join(args.output_path, "eval_result.jsonl")
+    summary_path = os.path.join(args.output_path, "summary.txt")
+
+    total = 0
+    correct = 0
+    filtered = 0
+
+    max_workers = 32
+    futures = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor, open(
+        eval_output_path, "w", encoding="utf-8"
+    ) as out_f:
+        for meta_path in iter_meta_info_files(args.result_path):
+            record_id = os.path.basename(os.path.dirname(meta_path))
+            for record in load_records(meta_path):
+                futures.append(executor.submit(evaluate_record, record, cfg, record_id))
+
+        for future in as_completed(futures):
+            eval_item = future.result()
+            result = eval_item["result"]
+            is_filter = isinstance(result, dict) and result.get("is_filter")
+            if is_filter:
+                filtered += 1
+            else:
+                total += 1
+                if result == 1.0:
+                    correct += 1
+            out_f.write(json.dumps(eval_item, ensure_ascii=False) + "\n")
+
+    accuracy = (correct / total) if total else 0.0
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(f"evaluated={total}\n")
+        f.write(f"correct={correct}\n")
+        f.write(f"filtered={filtered}\n")
+        f.write(f"accuracy={accuracy:.6f}\n")
+
+
+if __name__ == "__main__":
+    main()

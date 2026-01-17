@@ -10,7 +10,7 @@ from ..agents.api_agent import APIBasedAgent, AgentConfig
 from ..environment.action import TOOL_FUNCTIONS, TOOL_FUNCTIONS_DECLARE
 from ..environment.task.vision_qa_task import VisionQATask
 from ..config import API_KEY
-from ..constants import SYSTEM_PROMPT,MATHVISION_INPUT_TEMPLATE,MAX_TOOL_CALLS
+from ..constants import SYSTEM_PROMPT,MATHVISION_INPUT_TEMPLATE,MAX_TOOL_CALLS,NOTOOL_INPUT_TEMPLATE
 from datasets import load_dataset
 import logging
 from tqdm import tqdm
@@ -88,6 +88,17 @@ def main():
         system_instruction=[SYSTEM_PROMPT],
         max_output_tokens=max_output_tokens,
         candidate_count=1,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+    )
+    direct_generate_config = types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(
+            thinkingLevel="low",
+            include_thoughts=True
+        ),
+        temperature=1.0,
+        max_output_tokens=max_output_tokens,
+        candidate_count=1,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
     )
     config = AgentConfig(
         model_type="Google",
@@ -96,10 +107,18 @@ def main():
         generate_config=generate_config,
         n_retry=3,
     )
+    # config = AgentConfig(
+    #     model_type="Google",
+    #     model_name=args.model_name_or_path,
+    #     api_key=api_key,
+    #     generate_config=direct_generate_config,
+    #     n_retry=3,
+    # )
     api_agent=APIBasedAgent(config)
     
     meta_info_list= []
     INPUT_TEMPLATE= MATHVISION_INPUT_TEMPLATE
+    # INPUT_TEMPLATE= NOTOOL_INPUT_TEMPLATE
     for item in tqdm(dataset):
         api_agent.reset()
         id= item["original_id"]
