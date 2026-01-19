@@ -7,77 +7,12 @@ from google.genai import types
 from PIL import Image
 
 from .base import AgentConfig, BaseAgent
-from ..constants import  SYSTEM_PROMPT
+from ..constants import SYSTEM_PROMPT
 from ..environment.action import TOOL_FUNCTIONS, TOOL_FUNCTIONS_DECLARE
 
-import colorlog
+from ..utils.logger import setup_logger
 
-def setup_logger(level=logging.INFO):
-    handler = colorlog.StreamHandler()
-    handler.setFormatter(colorlog.ColoredFormatter(
-        "%(log_color)s%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "white",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "bold_red",
-        },
-    ))
-
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(handler)
-    root.setLevel(level)
-
-setup_logger(logging.INFO)
-logger = logging.getLogger(__name__)
-
-def build_agent(api_key: str, model_name: str):
-    max_output_tokens = 65536
-    tools = types.Tool(function_declarations=TOOL_FUNCTIONS_DECLARE)
-    tool_config = types.ToolConfig(
-        function_calling_config=types.FunctionCallingConfig(mode="AUTO")
-    )
-    # tool_config = types.ToolConfig(
-    #     function_calling_config=types.FunctionCallingConfig(
-    #         mode="ANY", allowed_function_names=list(TOOL_FUNCTIONS.keys())
-    #     )
-    # )
-    generate_config = types.GenerateContentConfig(
-        tools=[tools],
-        thinking_config=types.ThinkingConfig(thinkingLevel="low", include_thoughts=True),
-        tool_config=tool_config,
-        temperature=1.0,
-        system_instruction=[SYSTEM_PROMPT],
-        max_output_tokens=max_output_tokens,
-        candidate_count=1,
-    )
-    config = AgentConfig(
-        model_type="Google",
-        model_name=model_name,
-        api_key=api_key,
-        generate_config=generate_config,
-        n_retry=3,
-    )
-    api_agent = APIBasedAgent(config)
-
-    force_tool_config = types.ToolConfig(
-        function_calling_config=types.FunctionCallingConfig(mode="NONE")
-    )
-    force_generate_config = types.GenerateContentConfig(
-        tools=[tools],
-        thinking_config=generate_config.thinking_config,
-        tool_config=force_tool_config,
-        temperature=generate_config.temperature,
-        system_instruction=generate_config.system_instruction,
-        max_output_tokens=generate_config.max_output_tokens,
-        candidate_count=generate_config.candidate_count,
-    )
-    return api_agent, tools, generate_config, force_generate_config
-
-
+logger = setup_logger(__name__)
 
 class APIBasedAgent(BaseAgent):
     """Agent that interacts with an external API for generation."""
@@ -183,7 +118,8 @@ class APIBasedAgent(BaseAgent):
         """Reset agent state"""
         self.step_count = 0
         self.total_tokens_used = 0
-        self.cost = []
+        self.client=None
+        self._model_loaded=False
         logger.info("Agent state reset")
         
     def get_state(self) -> Dict[str, Any]:

@@ -1,44 +1,25 @@
-from google import genai
 import io
 import json
 import os
-from google.genai import types
 from PIL import Image
 import requests
 import argparse
 from ..agents.api_agent import APIBasedAgent, AgentConfig
-from ..environment.action import TOOL_FUNCTIONS, TOOL_FUNCTIONS_DECLARE
+from ..environment.action import TOOL_FUNCTIONS
 from ..environment.task.vision_qa_task import VisionQATask
-from ..config import API_KEY
-from ..constants import SYSTEM_PROMPT,MATHVISION_INPUT_TEMPLATE,MAX_TOOL_CALLS,NOTOOL_INPUT_TEMPLATE
+from ..config import (
+    MATHVISION_INPUT_TEMPLATE,
+    NOTOOL_INPUT_TEMPLATE,
+    build_agent_configs,
+)
+from ..constants import SYSTEM_PROMPT, MAX_TOOL_CALLS
 from datasets import load_dataset
 import logging
 from tqdm import tqdm
-import colorlog
 import shutil
-def setup_logger(level=logging.INFO):
-    handler = colorlog.StreamHandler()
-    handler.setFormatter(colorlog.ColoredFormatter(
-        "%(log_color)s%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "white",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "bold_red",
-        },
-    ))
+from ..utils.logger import setup_logger
 
-    root = logging.getLogger()
-    root.handlers.clear()
-    root.addHandler(handler)
-    root.setLevel(level)
-
-setup_logger(logging.INFO)
-logger = logging.getLogger(__name__)
-
-
+logger = setup_logger(__name__)
 
 def main():
     # argparse 
@@ -46,7 +27,7 @@ def main():
     parser.add_argument("--api_key", type=str, required=True, help="API key for Google GenAI.")
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to the dataset file.")
     parser.add_argument("--output_dir", type=str, required=True, help="Path to save the output JSONL file.")
-    parser.add_argument("--model_name_or_path", type=str, default="gemini-3-flash-preview", help="Model name or path.")
+    parser.add_argument("--model_name_or_path", type=str, default="gemini-3-pro-preview", help="Model name or path.")
     parser.add_argument("--max_concurrent_requests", type=int, default=32, help="Maximum number of concurrent requests.")
     parser.add_argument("--sample_rate", type=float, default=0.1, help="Sampling rate for the dataset.")
     args = parser.parse_args()
@@ -55,73 +36,47 @@ def main():
     dataset_path= args.dataset_path
     dataset= load_dataset("parquet", data_files=dataset_path)["train"]
 
+    # filter out examples without image_preview
+    dataset= dataset.filter(lambda x: x["image_preview"] is not None)
+    print(f"Dataset size after filtering: {len(dataset)}")
+    max_output_tokens= None
+
     if args.sample_rate<1.0:
         sample_size= int(len(dataset)* args.sample_rate)
         dataset= dataset.shuffle(seed=seed).select(range(sample_size))
         logger.info(f"Sampled {sample_size} examples from the dataset.")
     
     output_path= args.output_dir
+    agent_configs = build_agent_configs(
+        max_output_tokens=max_output_tokens,
+        thinking_level="high",
+        include_thoughts=True,
+        temperature=1.0,
+        system_prompt=SYSTEM_PROMPT,
+        candidate_count=1,
+        tool_mode="AUTO",
+        disable_automatic_function_calling=True,
+    )
+    tools = agent_configs.tools
+    generate_config = agent_configs.generate_config
+    direct_generate_config = agent_configs.direct_generate_config
 
-    
-    
-    max_output_tokens=65536
-    
-    tools = types.Tool(function_declarations=TOOL_FUNCTIONS_DECLARE)
-    # tool_config = types.ToolConfig(
-    #     function_calling_config=types.FunctionCallingConfig(
-    #         mode="ANY", allowed_function_names=list(TOOL_FUNCTIONS.keys())
-    #     )
-    # )
-    tool_config = types.ToolConfig(
-        function_calling_config=types.FunctionCallingConfig(
-            mode="AUTO"
-        )
-    )
-    generate_config = types.GenerateContentConfig(
-        tools=[tools],
-        thinking_config=types.ThinkingConfig(
-            thinkingLevel="low",
-            include_thoughts=True
-        ),
-        tool_config=tool_config,
-        temperature=1.0,
-        system_instruction=[SYSTEM_PROMPT],
-        max_output_tokens=max_output_tokens,
-        candidate_count=1,
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-    )
-    direct_generate_config = types.GenerateContentConfig(
-        thinking_config=types.ThinkingConfig(
-            thinkingLevel="low",
-            include_thoughts=True
-        ),
-        temperature=1.0,
-        max_output_tokens=max_output_tokens,
-        candidate_count=1,
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-    )
     config = AgentConfig(
         model_type="Google",
         model_name=args.model_name_or_path,
         api_key=api_key,
-        generate_config=generate_config,
+        generate_config=direct_generate_config,
         n_retry=3,
     )
-    # config = AgentConfig(
-    #     model_type="Google",
-    #     model_name=args.model_name_or_path,
-    #     api_key=api_key,
-    #     generate_config=direct_generate_config,
-    #     n_retry=3,
-    # )
     api_agent=APIBasedAgent(config)
     
     meta_info_list= []
-    INPUT_TEMPLATE= MATHVISION_INPUT_TEMPLATE
-    # INPUT_TEMPLATE= NOTOOL_INPUT_TEMPLATE
+    
+    # INPUT_TEMPLATE= MATHVISION_INPUT_TEMPLATE
+    INPUT_TEMPLATE= NOTOOL_INPUT_TEMPLATE
     for item in tqdm(dataset):
         api_agent.reset()
-        id= item["original_id"]
+        id= item["id"]
         if os.path.exists(os.path.join(output_path, id)):
             # Add meta info loading
             with open(os.path.join(output_path, id, "meta_info.jsonl"), "r", encoding="utf-8") as f:
@@ -133,19 +88,17 @@ def main():
         
         task_save_dir= os.path.join(output_path, id)
         os.makedirs(task_save_dir, exist_ok=True)
-        question= item["reasoning_q"]
+        question= item["question"]
         options= item.get("options", "")
-        answer= item["reasoning_a"]
-        if isinstance(item["image"], Image.Image):
-            image= item["image"]
-            image_url= os.path.join(task_save_dir, "input_image.jpg")
+        answer= item["answer"]
+        if isinstance(item["image_preview"], Image.Image):
+            image= item["image_preview"]
+            image_url= os.path.join(task_save_dir, "input_image.png")
             image.save(image_url)
         else:
-            image_url= item["image"]
-        
+            image_url= item["image_preview"]
         
         text_prompt= INPUT_TEMPLATE.format(question=question, options=options)
-        
         
         task= VisionQATask(
             task_id=id,
@@ -155,10 +108,8 @@ def main():
             tool_functions=TOOL_FUNCTIONS,
             save_dir=task_save_dir,
         )
-    
         max_tool_calls = MAX_TOOL_CALLS
         for i in range(max_tool_calls):
-            
             try:
                 action, extra_info = api_agent.act(task.contents)
                 function_call_part_list = task.parse_action(step=i+1, action=action, extra_info=extra_info)
@@ -177,19 +128,7 @@ def main():
             logging.info("Max tool calls reached; forcing final answer without tool calls.")
             FORCE_ANSWER_PROMPT = "Max tool calls reached. Please provide the final answer without further tool calls."
             task.contents.append(FORCE_ANSWER_PROMPT)
-            force_tool_config = types.ToolConfig(
-                function_calling_config=types.FunctionCallingConfig(mode="NONE")
-            )
-            force_generate_config = types.GenerateContentConfig(
-                tools=[tools],
-                thinking_config=generate_config.thinking_config,
-                tool_config=force_tool_config,
-                temperature=generate_config.temperature,
-                system_instruction=generate_config.system_instruction,
-                max_output_tokens=generate_config.max_output_tokens,
-                candidate_count=generate_config.candidate_count,
-            )
-            api_agent.config.generate_config = force_generate_config
+            api_agent.config.generate_config = agent_configs.force_generate_config
             action, extra_info = api_agent.act(task.contents)
             
             _ = task.parse_action(step=max_tool_calls + 1, action=action, extra_info=extra_info)

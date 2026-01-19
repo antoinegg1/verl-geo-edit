@@ -1,3 +1,5 @@
+API_KEY = ""
+
 SYSTEM_PROMPT = '''
 You are an advanced AI agent capable of complex
 reasoning and tool usage. You must strictly adhere
@@ -58,4 +60,4 @@ EVAL_QUERY_PROMPT = (
     'The format should be "Score: 0 or 1"'
 )
 
-MAX_TOOL_CALLS = 8
+MAX_TOOL_CALLS = 16

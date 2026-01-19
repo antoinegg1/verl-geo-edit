@@ -110,7 +110,7 @@ def evaluate_final_answer(
 
     judge = OpenAIJudge(model=cfg.model)
     score_str = judge.judge_correctness(question, ground_truth, final_pred)
-
+    print(f"Question: {question}, Ground Truth: {ground_truth}, Prediction: {final_pred}, Score: {score_str}")
     if score_str == "":
         return {"is_filter": True, "info": "no_score_returned", "raw_final_pred": final_pred}
     return 1.0 if score_str == "1" else 0.0

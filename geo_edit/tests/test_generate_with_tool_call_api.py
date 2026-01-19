@@ -9,13 +9,14 @@ from ..agents.api_agent import APIBasedAgent, AgentConfig
 from ..environment.action import TOOL_FUNCTIONS, TOOL_FUNCTIONS_DECLARE
 from ..environment.task.vision_qa_task import VisionQATask
 from ..config import API_KEY
-from ..constants import SYSTEM_PROMPT,MATHVISION_INPUT_TEMPLATE
+from ..constants import SYSTEM_PROMPT, MAX_TOOL_CALLS
 from datasets import load_dataset
 import logging
 import json
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from ..utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 def main():
     # argparse 
