@@ -30,6 +30,10 @@ NOTOOL_INPUT_TEMPLATE = '''
 Please solve the problem step by step. After you confirm the final answer, put your answer in one '<answer>\\boxed{{}}</answer>'. If it is a multiple choice question, only one letter is allowed in the '<answer>\\boxed{{}}</answer>'.\n{question}\n{options}
 '''
 
+TOOL_EXECUTION_SUCCESS_PROMPT="All your tool calls were executed successfully. Now you can check the tool execution results and decide your next action."
+
+TOOL_EXECUTION_FAILURE_PROMPT="Some of your tool calls failed. Please carefully check the tool execution results, identify the failed tool calls, and decide your next action accordingly."
+
 EVAL_SYSTEM_PROMPT = (
     "You are an intelligent chatbot designed for evaluating the correctness of generative outputs "
     "for question-answer pairs.\n"
@@ -61,3 +65,4 @@ EVAL_QUERY_PROMPT = (
 )
 
 MAX_TOOL_CALLS = 16
+

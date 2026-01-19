@@ -8,6 +8,7 @@ import logging
 import json
 import os
 from .base import AbstractVLMTask
+from ...constants import TOOL_EXECUTION_SUCCESS_PROMPT, TOOL_EXECUTION_FAILURE_PROMPT
 from ...utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -128,29 +129,139 @@ class VisionQATask(AbstractVLMTask):
         
         return function_call_part_list
 
-    def update_observation_from_action(self, function_call_part_list: Any):
-        
+    def _check_function_calls_legal(self, function_call_part_list: Any) -> Tuple[bool, Optional[str], Optional[str], Optional[int]]:
+        if not function_call_part_list:
+            logging.warning("No function calls found in the action.")
+            return True, None, None, None
+        first_call = function_call_part_list[0].function_call
+        expected_name = first_call.name
+        expected_index = first_call.args.get("image_index") if first_call.args else None
+        for part in function_call_part_list[1:]:
+            call = part.function_call
+            if call.name != expected_name:
+                logging.warning(f"Inconsistent function call names: expected {expected_name}, got {call.name}")
+                return False, "Function call names are inconsistent in the same action.", None, None
+            call_index = call.args.get("image_index") if call.args else None
+            if call_index != expected_index:
+                logging.warning(f"Inconsistent image_index values: expected {expected_index}, got {call_index}")
+                return False, "Function call image_index values are inconsistent in the same action.", None, None
+        return True, None, expected_name, expected_index
+    def update_observation_from_action(self, function_call_part_list: Any):  
+        is_legal, illegal_reason, expected_name, expected_index = self._check_function_calls_legal(function_call_part_list)
         dynamic_image=None
-        dynamic_image_index=None
         last_success_function_call=None
         error_result=[]
+        dynamic_image_index = expected_index
+        if not is_legal:
+            logging.warning(illegal_reason)
+            for part in function_call_part_list:
+                self.contents.append(
+                    types.Content(
+                        role="tool",
+                        parts=[
+                            types.Part.from_function_response(
+                                name=part.function_call.name,
+                                response={"error": illegal_reason}
+                            )
+                        ]
+                    )
+                )
+            self.contents.append(TOOL_EXECUTION_FAILURE_PROMPT)
+            return
+        
+        if expected_name == "image_crop":
+            call_results = []
+            for function_call_part in function_call_part_list:
+                function_call = function_call_part.function_call
+                logging.info(f"Processing function call: {function_call.name} with args: {function_call.args}")
+                if function_call.name in self.tool_functions.keys():
+                    function_to_call = self.tool_functions[function_call.name]
+                    try:
+                        result = function_to_call(self.image_list, **function_call.args)
+                        if isinstance(result, Image.Image):
+                            call_results.append(("image", function_call, result))
+                        else:
+                            call_results.append(
+                                ("error", function_call, f"Function call {function_call.name} with args {function_call.args} failed with error: {result}")
+                            )
+                    except Exception as e:
+                        call_results.append(
+                            ("error", function_call, f"Function call {function_call.name} with args {function_call.args} failed with error: {str(e)}")
+                        )
+                else:
+                    call_results.append(("error", function_call, f"Unknown function {function_call.name}"))
+
+            for result_type, function_call, payload in call_results:
+                if result_type == "image":
+                    dynamic_image = payload
+                    self.image_list.append(dynamic_image.copy())
+                    image_name = f"output_{len(self.image_list)-1}.jpg"
+                    image_path = os.path.join(self.image_save_dir, image_name)
+                    dynamic_image.save(image_path)
+                    self.image_path_map[id(dynamic_image)] = image_path
+                    image_bytes_io = io.BytesIO()
+                    dynamic_image.save(image_bytes_io, format="JPEG")
+                    image_bytes = image_bytes_io.getvalue()
+
+                    function_response_data = {
+                        "image_ref": {f"Observation {len(self.image_list)-1}": image_name},
+                    }
+                    function_response_multimodal_data = types.FunctionResponsePart(
+                        inline_data=types.FunctionResponseBlob(
+                            mime_type="image/jpeg",
+                            display_name=image_name,
+                            data=image_bytes,
+                        )
+                    )
+                    self.contents.append(
+                        types.Content(role="tool",
+                                      parts=[
+                                          types.Part.from_function_response(
+                                                name=function_call.name,
+                                                response=function_response_data,
+                                                parts=[function_response_multimodal_data]
+                                                )
+                                            ]
+                                      )
+                        )
+                else:
+                    self.contents.append(
+                        types.Content(
+                            role="tool",
+                            parts=[
+                                types.Part.from_function_response(
+                                    name=function_call.name,
+                                    response={"error": payload}
+                                )
+                            ]
+                        )
+                    )
+            had_error = any(result_type != "image" for result_type, _, _ in call_results)
+            self.contents.append(
+                TOOL_EXECUTION_FAILURE_PROMPT if had_error else TOOL_EXECUTION_SUCCESS_PROMPT
+            )
+            return
+        
         for function_call_part in function_call_part_list:
             function_call=function_call_part.function_call
             logging.info(f"Processing function call: {function_call.name} with args: {function_call.args}")
             if function_call.name in self.tool_functions.keys():
                 function_to_call=self.tool_functions[function_call.name]
-                dynamic_image_list = [img.copy() for img in self.image_list]
-                if dynamic_image is not None and dynamic_image_index is not None:
-                    dynamic_image_list[dynamic_image_index] = dynamic_image.copy()
+                target_index = dynamic_image_index
+                if dynamic_image is None and function_call.args:
+                    target_index = function_call.args.get("image_index", dynamic_image_index)
+                dynamic_image_list = list(self.image_list)
+                if target_index is not None and 0 <= target_index < len(self.image_list):
+                    if dynamic_image is not None:
+                        dynamic_image_list[target_index] = dynamic_image.copy()
+                    else:
+                        dynamic_image_list[target_index] = self.image_list[target_index].copy()
                 try:
                     
                     result=function_to_call(dynamic_image_list, **function_call.args)
                     
                     dynamic_image = result
-                    if dynamic_image_index is not None:
-                        assert dynamic_image_index==function_call.args.get("image_index"), \
-                            f"Function call image_index {function_call.args.get('image_index')} inconsistent with last successful function call image_index {dynamic_image_index}"
-                    else:
+                    if dynamic_image_index is None:
                         dynamic_image_index = function_call.args.get("image_index", dynamic_image_index)
                     last_success_function_call = function_call
                     
@@ -209,6 +320,10 @@ class VisionQATask(AbstractVLMTask):
                         ]
                     )
                 )
+        had_error = bool(error_result) or not isinstance(dynamic_image, Image.Image)
+        self.contents.append(
+            TOOL_EXECUTION_FAILURE_PROMPT if had_error else TOOL_EXECUTION_SUCCESS_PROMPT
+        )
         
     def save_trajectory(self):
         """save the trajectory to jsonl files"""
